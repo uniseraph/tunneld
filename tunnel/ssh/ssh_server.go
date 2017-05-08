@@ -10,8 +10,15 @@ import (
 	"golang.org/x/crypto/ssh"
 	"github.com/Sirupsen/logrus"
 
-	"github.com/zanecloud/plumber/plumber/scp"
-	"github.com/zanecloud/plumber/plumber/client"
+	"github.com/zanecloud/tunneld/tunnel/scp"
+//	"github.com/zanecloud/tunneld/tunnel/client"
+	"github.com/docker/engine-api/client"
+	"context"
+	"github.com/docker/engine-api/types"
+	"errors"
+	"io"
+	"github.com/docker/docker/pkg/promise"
+	"github.com/docker/docker/pkg/stdcopy"
 )
 
 var (
@@ -36,7 +43,7 @@ func init() {
 	SSHConfig.AddHostKey(private)
 }
 
-func HandleSSHConnection(nConn net.Conn, c *client.HTTPClient, isNoSshAuth bool) error {
+func HandleSSHConnection(nConn net.Conn, c *client.Client, isNoSshAuth bool) error {
 	if isNoSshAuth {
 		SSHConfig.NoClientAuth = true
 	}
@@ -57,7 +64,25 @@ func HandleSSHConnection(nConn net.Conn, c *client.HTTPClient, isNoSshAuth bool)
 	return nil
 }
 
-func handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.NewChannel, c *client.HTTPClient) {
+
+func isContainerExist(c *client.Client , container string) (exist bool, running bool, err error) {
+	cInfo, err := c.ContainerInspect(context.Background(), container)
+	if err == client.ContainerNotFoundError {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	if !cInfo.State.Running {
+		// not running
+		return true, false, nil
+	}
+	return true, true, nil
+}
+
+
+
+func handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.NewChannel, c *client.Client) {
 	// Service the incoming Channel channel.
 	for newChannel := range chans {
 		// Channels have a type, depending on the application level
@@ -79,7 +104,7 @@ func handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.NewChannel, c *cli
 		notRunningContainers := []string{}
 		errorContainers := []string{}
 		for _, container := range strings.Split(sshConn.User(), ",") {
-			exist, running, err := c.IsContainerExist(container)
+			exist, running, err := isContainerExist(c,container)
 			if err != nil {
 				errorContainers = append(errorContainers, container)
 			} else {
@@ -120,7 +145,7 @@ func handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.NewChannel, c *cli
 	}
 }
 
-func startSSHSession(containers []string, channel ssh.Channel, in <-chan *ssh.Request, c *client.HTTPClient) {
+func startSSHSession(containers []string, channel ssh.Channel, in <-chan *ssh.Request, c *client.Client) {
 	// Sessions have out-of-band requests such as "shell", "pty-req" and "env"
 	for req := range in {
 		logrus.Debugf("%v %s", req.Payload, req.Payload)
@@ -181,7 +206,7 @@ func startSSHSession(containers []string, channel ssh.Channel, in <-chan *ssh.Re
 						container, command)
 
 					fmt.Fprintf(channel, "[Container: %s]\n", container)
-					err := c.CmdExec(container, channel, command, false)
+					err := cmdExec(c,container, channel, command, false)
 					if err != nil {
 						logrus.Errorf("failed to exit bash (%v) of container %s\n", err, container)
 						fmt.Fprintln(channel, "Error:", err)
@@ -206,7 +231,7 @@ func startSSHSession(containers []string, channel ssh.Channel, in <-chan *ssh.Re
 			// Pipe session to bash and visa-versa
 			go func() {
 				// do call docker exec, io.Copy
-				c.CmdExec(container, channel, []string{DEFAULT_SHELL}, true)
+				cmdExec(c , container, channel, []string{DEFAULT_SHELL}, true)
 				//io.Copy(channel, f)
 				once.Do(close)
 			}()
@@ -252,3 +277,144 @@ func parseDims(b []byte) (uint32, uint32) {
 }
 
 
+
+func  cmdExec(c *client.Client, containerId string, channel ssh.Channel, cmd []string, setTty bool) error {
+	execConfig := &types.ExecConfig{
+		Container:  containerId,
+		Cmd:        cmd,
+		Tty:        setTty,
+		AttachStdin: true,
+		AttachStdout: true,
+		AttachStderr: true,
+	}
+
+	response, err := c.ContainerExecCreate(context.Background(), containerId, *execConfig)
+	if err != nil {
+		return err
+	}
+
+	execID := response.ID
+	if execID == "" {
+		fmt.Fprintf(channel, "exec ID empty")
+		return errors.New("exec ID empty")
+	}
+
+	// Interactive exec requested.
+	var (
+		out, stderr io.Writer
+		in          io.ReadCloser
+		errCh       chan error
+	)
+
+	if execConfig.AttachStdin {
+		in = channel
+	}
+	if execConfig.AttachStdout {
+		out = channel
+	}
+	if execConfig.AttachStderr {
+		if execConfig.Tty {
+			stderr = channel
+		} else {
+			stderr = channel
+		}
+	}
+
+	resp, err := c.ContainerExecAttach(context.Background(), execID, *execConfig)
+	if err != nil {
+		return err
+	}
+	defer resp.Close()
+	//if in != nil && execConfig.Tty {
+	//	if err := cli.setRawTerminal(); err != nil {
+	//		return err
+	//	}
+	//	defer cli.restoreTerminal(in)
+	//}
+	errCh = promise.Go(func() error {
+		return holdHijackedConnection(execConfig.Tty, in, out, stderr, resp)
+	})
+
+	//if execConfig.Tty && cli.isTerminalIn {
+	//	if err := cli.monitorTtySize(execID, true); err != nil {
+	//		fmt.Fprintf(cli.err, "Error monitoring TTY size: %s\n", err)
+	//	}
+	//}
+
+	if err := <-errCh; err != nil {
+		logrus.Debugf("Error hijack: %s", err)
+		return err
+	}
+
+	var status int
+	if _, status, err = getExecExitCode(c, execID); err != nil {
+		return err
+	}
+
+	if status != 0 {
+		return errors.New("status == 0 error")
+	}
+
+	return nil
+}
+
+func getExecExitCode(c *client.Client, execID string) (bool, int, error) {
+	var ErrConnectionFailed = errors.New("Cannot connect to the Docker daemon. Is the docker daemon running on this host?")
+
+	resp, err := c.ContainerExecInspect(context.Background(), execID)
+	if err != nil {
+		// If we can't connect, then the daemon probably died.
+		if err != ErrConnectionFailed {
+			return false, -1, err
+		}
+		return false, -1, nil
+	}
+
+	return resp.Running, resp.ExitCode, nil
+}
+func holdHijackedConnection(tty bool, inputStream io.ReadCloser, outputStream, errorStream io.Writer, resp types.HijackedResponse) error {
+	var err error
+	receiveStdout := make(chan error, 1)
+	if outputStream != nil || errorStream != nil {
+		go func() {
+			// When TTY is ON, use regular copy
+			if tty && outputStream != nil {
+				_, err = io.Copy(outputStream, resp.Reader)
+			} else {
+				_, err = stdcopy.StdCopy(outputStream, errorStream, resp.Reader)
+			}
+			logrus.Debugf("[hijack] End of stdout")
+			receiveStdout <- err
+		}()
+	}
+
+	stdinDone := make(chan struct{})
+	go func() {
+		if inputStream != nil {
+			io.Copy(resp.Conn, inputStream)
+			logrus.Debugf("[hijack] End of stdin")
+		}
+
+		if err := resp.CloseWrite(); err != nil {
+			logrus.Debugf("Couldn't send EOF: %s", err)
+		}
+		close(stdinDone)
+	}()
+
+	select {
+	case err := <-receiveStdout:
+		if err != nil {
+			logrus.Debugf("Error receiveStdout: %s", err)
+			return err
+		}
+	case <-stdinDone:
+		if outputStream != nil || errorStream != nil {
+			if err := <-receiveStdout; err != nil {
+				logrus.Debugf("Error receiveStdout: %s", err)
+				return err
+			}
+		}
+	}
+
+	return nil
+}

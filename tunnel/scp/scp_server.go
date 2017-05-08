@@ -16,7 +16,7 @@ import (
 	"github.com/Sirupsen/logrus"
 
 	"github.com/docker/engine-api/types"
-	"github.com/zanecloud/plumber/plumber/client"
+	"github.com/docker/engine-api/client"
 )
 
 type ContainerPipe struct {
@@ -198,7 +198,7 @@ func receiveResponse(channel ssh.Channel) (bool, error) {
 }
 
 // ScpCopyFromContainer only support one container
-func ScpCopyFromContainer(container string, srcPath string, channel ssh.Channel, c *client.HTTPClient, isCopyPath bool) error {
+func ScpCopyFromContainer(container string, srcPath string, channel ssh.Channel, c *client.Client, isCopyPath bool) error {
 
 	// TODO: if the file exist or not
 	// scp: para1: not a regular file
@@ -361,7 +361,7 @@ func transferFile(channel ssh.Channel, containerPipes []*ContainerPipe) error {
 }
 
 // ScpCopyToContainer support copy to multi-containers
-func ScpCopyToContainer(containers []string, dstPath string, channel ssh.Channel, c *client.HTTPClient) error {
+func ScpCopyToContainer(containers []string, dstPath string, channel ssh.Channel, c *client.Client) error {
 	var containerPipes = []*ContainerPipe{}
 	for _, container := range containers {
 		// init pipe to change raw file content to tar format

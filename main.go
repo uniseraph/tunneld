@@ -14,8 +14,9 @@ import (
 
 	"github.com/Sirupsen/logrus"
 
-	"github.com/zanecloud/plumber/plumber/ssh"
-	"github.com/zanecloud/plumber/plumber/client"
+	"github.com/zanecloud/tunneld/tunnel/ssh"
+	//"github.com/zanecloud/tunneld/tunnel/client"
+	"github.com/docker/engine-api/client"
 )
 
 const(
@@ -26,7 +27,7 @@ const(
 var (
 	PrintVersion     bool
 	ListenAddr string
-	DockerAddr string
+	//DockerAddr string
 
 	// tls
 	TLSVerify    bool
@@ -41,14 +42,14 @@ var (
 func init() {
 	log.SetPrefix(os.Args[0] + " | ")
 
-	flag.BoolVar(&PrintVersion, "v", false, "Show ACS Plumber Version")
-	flag.StringVar(&ListenAddr, "H", "0.0.0.0:2022", "ACS Plumber Listen Address")
+	flag.BoolVar(&PrintVersion, "v", false, "Show Tunneld Version")
+	flag.StringVar(&ListenAddr, "H", "0.0.0.0:2022", "Tunneld Listen Address")
 
-	flag.StringVar(&DockerAddr, "d", "localhost:2376", "Swarm or Docker Listen Address")
-	flag.BoolVar(&TLSVerify, "tlsverify", false, "Use TLS and verify the remote")
-	flag.StringVar(&TLSCacert, "tlscacert", "~/.docker/ca.pem", "Trust certs signed only by this CA")
-	flag.StringVar(&TLSCert, "tlscert", "~/.docker/cert.pem", "Path to TLS certificate file")
-	flag.StringVar(&TLSKey, "tlskey", "~/.docker/key.pem", "Path to TLS key file")
+	//flag.StringVar(&DockerAddr, "d", "localhost:2376", "Swarm or Docker Listen Address")
+	//flag.BoolVar(&TLSVerify, "tlsverify", false, "Use TLS and verify the remote")
+	//flag.StringVar(&TLSCacert, "tlscacert", "~/.docker/ca.pem", "Trust certs signed only by this CA")
+	//flag.StringVar(&TLSCert, "tlscert", "~/.docker/cert.pem", "Path to TLS certificate file")
+	//flag.StringVar(&TLSKey, "tlskey", "~/.docker/key.pem", "Path to TLS key file")
 
 	flag.BoolVar(&IsNoSshAuth, "noauth", false, "No Ssh Auth")
 	flag.BoolVar(&IsDebug, "debug", false, "Debug Log Level")
@@ -106,13 +107,14 @@ func main() {
 	}
 
 	if PrintVersion {
-		fmt.Printf("Plumber: %s\n", VERSION)
+		fmt.Printf("Tunneld: %s\n", VERSION)
 		return
 	}
 
-	logrus.Infoln("Connect swarm/docker at", DockerAddr)
-	tlsConfig, err := loadTLSConfig(TLSCacert, TLSCert, TLSKey, TLSVerify)
-	c, err := client.NewHTTPClientTimeout(DockerAddr, tlsConfig, REQUEST_TIMEOUT)
+	//logrus.Infoln("Connect swarm/docker at", DockerAddr)
+	//tlsConfig, err := loadTLSConfig(TLSCacert, TLSCert, TLSKey, TLSVerify)
+	//c, err := client.NewHTTPClientTimeout(DockerAddr, tlsConfig, REQUEST_TIMEOUT)
+	c, err := client.NewEnvClient()
 	if err != nil {
 		logrus.Fatal("Error occurs when create docker client: ", err)
 	}
@@ -125,7 +127,7 @@ func main() {
 		logrus.Fatal("failed to listen for connection: ", err)
 	}
 
-	logrus.Printf("ACS Plumber Listening on %s", ListenAddr)
+	logrus.Printf("Tunneld Listening on %s", ListenAddr)
 	for {
 		// keep listen new connections
 		nConn, err := listener.Accept()
