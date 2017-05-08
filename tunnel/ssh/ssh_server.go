@@ -43,7 +43,7 @@ func init() {
 	SSHConfig.AddHostKey(private)
 }
 
-func HandleSSHConnection(nConn net.Conn, c *client.Client, isNoSshAuth bool) error {
+func HandleSSHConnection(nConn net.Conn, c client.APIClient, isNoSshAuth bool) error {
 	if isNoSshAuth {
 		SSHConfig.NoClientAuth = true
 	}
@@ -65,7 +65,7 @@ func HandleSSHConnection(nConn net.Conn, c *client.Client, isNoSshAuth bool) err
 }
 
 
-func isContainerExist(c *client.Client , container string) (exist bool, running bool, err error) {
+func isContainerExist(c client.APIClient , container string) (exist bool, running bool, err error) {
 	cInfo, err := c.ContainerInspect(context.Background(), container)
 	if err == client.ContainerNotFoundError {
 		return false, false, nil
@@ -82,7 +82,7 @@ func isContainerExist(c *client.Client , container string) (exist bool, running 
 
 
 
-func handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.NewChannel, c *client.Client) {
+func handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.NewChannel, c client.APIClient) {
 	// Service the incoming Channel channel.
 	for newChannel := range chans {
 		// Channels have a type, depending on the application level
@@ -145,7 +145,7 @@ func handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.NewChannel, c *cli
 	}
 }
 
-func startSSHSession(containers []string, channel ssh.Channel, in <-chan *ssh.Request, c *client.Client) {
+func startSSHSession(containers []string, channel ssh.Channel, in <-chan *ssh.Request, c client.APIClient) {
 	// Sessions have out-of-band requests such as "shell", "pty-req" and "env"
 	for req := range in {
 		logrus.Debugf("%v %s", req.Payload, req.Payload)
@@ -278,7 +278,7 @@ func parseDims(b []byte) (uint32, uint32) {
 
 
 
-func  cmdExec(c *client.Client, containerId string, channel ssh.Channel, cmd []string, setTty bool) error {
+func  cmdExec(c client.APIClient, containerId string, channel ssh.Channel, cmd []string, setTty bool) error {
 	execConfig := &types.ExecConfig{
 		Container:  containerId,
 		Cmd:        cmd,
@@ -358,7 +358,7 @@ func  cmdExec(c *client.Client, containerId string, channel ssh.Channel, cmd []s
 	return nil
 }
 
-func getExecExitCode(c *client.Client, execID string) (bool, int, error) {
+func getExecExitCode(c client.APIClient, execID string) (bool, int, error) {
 	var ErrConnectionFailed = errors.New("Cannot connect to the Docker daemon. Is the docker daemon running on this host?")
 
 	resp, err := c.ContainerExecInspect(context.Background(), execID)

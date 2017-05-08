@@ -43,7 +43,7 @@ func init() {
 	log.SetPrefix(os.Args[0] + " | ")
 
 	flag.BoolVar(&PrintVersion, "v", false, "Show Tunneld Version")
-	flag.StringVar(&ListenAddr, "H", "0.0.0.0:2022", "Tunneld Listen Address")
+	flag.StringVar(&ListenAddr, "l", "0.0.0.0:2022", "Tunneld Listen Address")
 
 	//flag.StringVar(&DockerAddr, "d", "localhost:2376", "Swarm or Docker Listen Address")
 	//flag.BoolVar(&TLSVerify, "tlsverify", false, "Use TLS and verify the remote")
