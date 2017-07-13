@@ -31,6 +31,5 @@ release:
 	docker tag ${IMAGE_NAME}:${VERSION}-${GITCOMMIT} ${IMAGE_NAME}
 	docker push ${IMAGE_NAME}:${VERSION}-${GITCOMMIT}
 	docker push ${IMAGE_NAME}:${VERSION}
-	docker push ${IMAGE_NAME}
 
 .PHONY: build binary build-local image release
