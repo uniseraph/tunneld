@@ -2,7 +2,7 @@
 
 SHELL = /bin/bash
 
-GOLANG = golang:1.7.5
+GOLANG = golang:1.8.3
 
 TUNNELD = github.com/zanecloud/tunneld
 
@@ -26,7 +26,7 @@ image:
 	docker build -t ${IMAGE_NAME} .
 	docker tag ${IMAGE_NAME} ${IMAGE_NAME}:${VERSION}-${GITCOMMIT}
 
-publish:
+release:
 	docker tag ${IMAGE_NAME}:${VERSION}-${GITCOMMIT} ${IMAGE_NAME}:${VERSION}
 	docker tag ${IMAGE_NAME}:${VERSION}-${GITCOMMIT} ${IMAGE_NAME}
 	docker push ${IMAGE_NAME}:${VERSION}-${GITCOMMIT}
