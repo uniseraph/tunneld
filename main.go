@@ -1,42 +1,42 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"net"
 	"os"
-	"flag"
-	"time"
-	"crypto/tls"
-	"crypto/x509"
 	"runtime"
+	"time"
 
 	"github.com/Sirupsen/logrus"
 
-	"github.com/zanecloud/tunneld/tunnel/ssh"
-	//"github.com/zanecloud/tunneld/tunnel/client"
 	"github.com/docker/engine-api/client"
+	"github.com/zanecloud/tunneld/tunnel/audit/zaneaudit"
+	"github.com/zanecloud/tunneld/tunnel/ssh"
 )
 
-const(
-	VERSION string = "v1.0"
-	REQUEST_TIMEOUT = 30 * time.Second
+const (
+	VERSION         string = "v1.0"
+	REQUEST_TIMEOUT        = 30 * time.Second
 )
 
 var (
-	PrintVersion     bool
-	ListenAddr string
+	PrintVersion bool
+	ListenAddr   string
 	//DockerAddr string
 
 	// tls
-	TLSVerify    bool
-	TLSCacert    string
-	TLSCert      string
-	TLSKey       string
+	TLSVerify bool
+	TLSCacert string
+	TLSCert   string
+	TLSKey    string
 
 	IsNoSshAuth bool
-	IsDebug bool
+	IsDebug     bool
 )
 
 func init() {
@@ -119,6 +119,11 @@ func main() {
 		logrus.Fatal("Error occurs when create docker client: ", err)
 	}
 
+	// new audit client
+	auditClient, err := zaneaudit.NewEnvClient()
+	if err != nil {
+		logrus.Warning("Audit is disabled: ", err)
+	}
 
 	// Once a ServerConfig has been configured, connections can be
 	// accepted.
@@ -136,7 +141,7 @@ func main() {
 			continue
 		}
 
-		err = ssh.HandleSSHConnection(nConn, c, IsNoSshAuth)
+		err = ssh.HandleSSHConnection(nConn, c, auditClient, IsNoSshAuth)
 		if err != nil {
 			logrus.Errorln("error occurs in ssh listen server: ", err)
 			continue
@@ -144,5 +149,3 @@ func main() {
 	}
 
 }
-
-

@@ -1,30 +1,37 @@
 package ssh
 
 import (
-	"net"
-	"fmt"
-	"sync"
-	"strings"
 	"encoding/binary"
-
-	"golang.org/x/crypto/ssh"
-	"github.com/Sirupsen/logrus"
-
-	"github.com/zanecloud/tunneld/tunnel/scp"
-//	"github.com/zanecloud/tunneld/tunnel/client"
-	"github.com/docker/engine-api/client"
-	"context"
-	"github.com/docker/engine-api/types"
-	"errors"
+	"fmt"
 	"io"
+	"net"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/Sirupsen/logrus"
+	"golang.org/x/crypto/ssh"
+
+	"context"
+	"errors"
 	"github.com/docker/docker/pkg/promise"
 	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/docker/engine-api/client"
+	"github.com/docker/engine-api/types"
+	"github.com/zanecloud/tunneld/tunnel/audit"
+	"github.com/zanecloud/tunneld/tunnel/scp"
 )
 
 var (
-	SSHConfig *ssh.ServerConfig
+	SSHConfig     *ssh.ServerConfig
 	DEFAULT_SHELL string = "sh"
 )
+
+type SessionStore struct {
+	Id     string
+	Width  uint32
+	Height uint32
+}
 
 func init() {
 	SSHConfig = &ssh.ServerConfig{
@@ -43,7 +50,7 @@ func init() {
 	SSHConfig.AddHostKey(private)
 }
 
-func HandleSSHConnection(nConn net.Conn, c client.APIClient, isNoSshAuth bool) error {
+func HandleSSHConnection(nConn net.Conn, c client.APIClient, ac audit.AuditClient, isNoSshAuth bool) error {
 	if isNoSshAuth {
 		SSHConfig.NoClientAuth = true
 	}
@@ -59,13 +66,12 @@ func HandleSSHConnection(nConn net.Conn, c client.APIClient, isNoSshAuth bool) e
 	logrus.Infof("new ssh connection from %s (%s)", sshConn.RemoteAddr(), sshConn.ClientVersion())
 
 	// Service the incoming Channel channel.
-	go handleChannels(sshConn, chans, c)
+	go handleChannels(sshConn, chans, c, ac)
 
 	return nil
 }
 
-
-func isContainerExist(c client.APIClient , container string) (exist bool, running bool, err error) {
+func isContainerExist(c client.APIClient, container string) (exist bool, running bool, err error) {
 	cInfo, err := c.ContainerInspect(context.Background(), container)
 	if err == client.ContainerNotFoundError {
 		return false, false, nil
@@ -80,9 +86,7 @@ func isContainerExist(c client.APIClient , container string) (exist bool, runnin
 	return true, true, nil
 }
 
-
-
-func handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.NewChannel, c client.APIClient) {
+func handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.NewChannel, c client.APIClient, ac audit.AuditClient) {
 	// Service the incoming Channel channel.
 	for newChannel := range chans {
 		// Channels have a type, depending on the application level
@@ -99,12 +103,46 @@ func handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.NewChannel, c clie
 			continue
 		}
 
+		var containers string
+
+		// audit auth here
+		remoteUser := strings.Split(sshConn.RemoteAddr().String(), ":")[0]
+		if ac != nil {
+			loginResp, err := ac.AuditLogin(&audit.AuditLoginRequest{
+				Token:     sshConn.User(),
+				User:      remoteUser,
+				Timestamp: time.Now().Format("2006-01-02 15:04:05"),
+			})
+			if err != nil {
+				logrus.Errorf("Error occurs when do AuditLogin: %v", err)
+				channel.Write([]byte(err.Error()))
+				channel.Close()
+				return
+			}
+			if loginResp.Status == 0 {
+				// auth failed
+				logrus.Infof("Auth Failed when do AuditLogin: %s", loginResp.Result)
+				channel.Write([]byte(err.Error()))
+				channel.Close()
+				return
+			}
+			containers = loginResp.Container
+		} else {
+			containers = sshConn.User()
+		}
+
+		var auditInfo = &audit.AuditInfo{
+			AuditClient: ac,
+			Token:       sshConn.User(),
+			User:        remoteUser,
+		}
+
 		// verify containers and permission
 		notExistContainers := []string{}
 		notRunningContainers := []string{}
 		errorContainers := []string{}
-		for _, container := range strings.Split(sshConn.User(), ",") {
-			exist, running, err := isContainerExist(c,container)
+		for _, container := range strings.Split(containers, ",") {
+			exist, running, err := isContainerExist(c, container)
 			if err != nil {
 				errorContainers = append(errorContainers, container)
 			} else {
@@ -133,25 +171,31 @@ func handleChannels(sshConn *ssh.ServerConn, chans <-chan ssh.NewChannel, c clie
 			logrus.Debugln("Session closed with container errors")
 		} else {
 			// start ssh session for containers
-			containers := strings.Split(sshConn.User(), ",")
-			if len(containers) == 0 {
+			cs := strings.Split(containers, ",")
+			if len(cs) == 0 {
 				fmt.Fprintln(channel, "No Contaienr Input")
 				channel.Close()
 				return
 			} else {
-				go startSSHSession(containers, channel, requests, c)
+				go startSSHSession(cs, channel, requests, c, auditInfo)
 			}
 		}
 	}
 }
 
-func startSSHSession(containers []string, channel ssh.Channel, in <-chan *ssh.Request, c client.APIClient) {
+func startSSHSession(containers []string, channel ssh.Channel, in <-chan *ssh.Request, c client.APIClient, ai *audit.AuditInfo) {
 	// Sessions have out-of-band requests such as "shell", "pty-req" and "env"
+	execIdStore := &SessionStore{}
 	for req := range in {
 		logrus.Debugf("%v %s", req.Payload, req.Payload)
 		ok := false
 		switch req.Type {
 		case "exec":
+			if ai.AuditClient != nil {
+				// do audit, not support exec mode
+				channel.Close()
+				logrus.Debugln("SSH exec not support when audit is turned on")
+			}
 			ok = true
 			command := []string{DEFAULT_SHELL, "-c", string(req.Payload[4 : req.Payload[3]+4])}
 			commandSplits := strings.Split(command[2], " ")
@@ -159,8 +203,8 @@ func startSSHSession(containers []string, channel ssh.Channel, in <-chan *ssh.Re
 				// do scp
 				var (
 					isCopyPath = false
-					isCopyTo = false
-					isCopyFrom =false
+					isCopyTo   = false
+					isCopyFrom = false
 				)
 				for _, cs := range commandSplits {
 					if cs == "-r" {
@@ -206,7 +250,7 @@ func startSSHSession(containers []string, channel ssh.Channel, in <-chan *ssh.Re
 						container, command)
 
 					fmt.Fprintf(channel, "[Container: %s]\n", container)
-					err := cmdExec(c,container, channel, command, false)
+					err := cmdExec(c, ai, container, channel, command, false, execIdStore)
 					if err != nil {
 						logrus.Errorf("failed to exit bash (%v) of container %s\n", err, container)
 						fmt.Fprintln(channel, "Error:", err)
@@ -214,7 +258,7 @@ func startSSHSession(containers []string, channel ssh.Channel, in <-chan *ssh.Re
 					fmt.Fprintln(channel, "")
 				}
 			}
-			CLOSE:
+		CLOSE:
 			channel.Close()
 			logrus.Debugln("exec session closed")
 		case "shell":
@@ -231,7 +275,7 @@ func startSSHSession(containers []string, channel ssh.Channel, in <-chan *ssh.Re
 			// Pipe session to bash and visa-versa
 			go func() {
 				// do call docker exec, io.Copy
-				cmdExec(c , container, channel, []string{DEFAULT_SHELL}, true)
+				cmdExec(c, ai, container, channel, []string{DEFAULT_SHELL}, true, execIdStore)
 				//io.Copy(channel, f)
 				once.Do(close)
 			}()
@@ -249,16 +293,19 @@ func startSSHSession(containers []string, channel ssh.Channel, in <-chan *ssh.Re
 			// Parse body...
 			termLen := req.Payload[3]
 			termEnv := string(req.Payload[4 : termLen+4])
-			w, h := parseDims(req.Payload[termLen+4:])
+			execIdStore.Width, execIdStore.Height = parseDims(req.Payload[termLen+4:])
 			//SetWinsize(f.Fd(), w, h)
-			logrus.Println(w)
-			logrus.Println(h)
 			logrus.Printf("pty-req '%s'", termEnv)
-		//case "window-change":
-		//	log.Println("this is window-change")
-		//	w, h := parseDims(req.Payload)
-		//	SetWinsize(f.Fd(), w, h)
-		//	continue //no response
+		case "window-change":
+			execId := execIdStore.Id
+			if execId == "" {
+				logrus.Debugln("execId store is empty, skip window change")
+				continue
+			}
+			logrus.Debugln("this is window-change")
+			w, h := parseDims(req.Payload)
+			cmdResizeTty(c, execId, h, w, true)
+			continue //no response
 		}
 
 		if !ok {
@@ -276,14 +323,36 @@ func parseDims(b []byte) (uint32, uint32) {
 	return w, h
 }
 
+// cmdResizeTty when isExec is true, id is execId, when isExec is false, id is contaienrId
+func cmdResizeTty(c client.APIClient, id string, height, width uint32, isExec bool) {
+	if height == 0 && width == 0 {
+		return
+	}
 
+	options := types.ResizeOptions{
+		ID:     id,
+		Height: int(height),
+		Width:  int(width),
+	}
 
-func  cmdExec(c client.APIClient, containerId string, channel ssh.Channel, cmd []string, setTty bool) error {
+	var err error
+	if isExec {
+		err = c.ContainerExecResize(context.Background(), options)
+	} else {
+		err = c.ContainerResize(context.Background(), options)
+	}
+
+	if err != nil {
+		logrus.Debugf("Error resize: %s", err)
+	}
+}
+
+func cmdExec(c client.APIClient, ai *audit.AuditInfo, containerId string, channel ssh.Channel, cmd []string, setTty bool, execIdStore *SessionStore) error {
 	execConfig := &types.ExecConfig{
-		Container:  containerId,
-		Cmd:        cmd,
-		Tty:        setTty,
-		AttachStdin: true,
+		Container:    containerId,
+		Cmd:          cmd,
+		Tty:          setTty,
+		AttachStdin:  true,
 		AttachStdout: true,
 		AttachStderr: true,
 	}
@@ -298,6 +367,7 @@ func  cmdExec(c client.APIClient, containerId string, channel ssh.Channel, cmd [
 		fmt.Fprintf(channel, "exec ID empty")
 		return errors.New("exec ID empty")
 	}
+	execIdStore.Id = execID
 
 	// Interactive exec requested.
 	var (
@@ -325,21 +395,15 @@ func  cmdExec(c client.APIClient, containerId string, channel ssh.Channel, cmd [
 		return err
 	}
 	defer resp.Close()
-	//if in != nil && execConfig.Tty {
-	//	if err := cli.setRawTerminal(); err != nil {
-	//		return err
-	//	}
-	//	defer cli.restoreTerminal(in)
-	//}
+
 	errCh = promise.Go(func() error {
-		return holdHijackedConnection(execConfig.Tty, in, out, stderr, resp)
+		return holdHijackedConnection(execConfig.Tty, in, out, stderr, resp, ai)
 	})
 
-	//if execConfig.Tty && cli.isTerminalIn {
-	//	if err := cli.monitorTtySize(execID, true); err != nil {
-	//		fmt.Fprintf(cli.err, "Error monitoring TTY size: %s\n", err)
-	//	}
-	//}
+	// init window size
+	if execIdStore.Height != 0 && execIdStore.Width != 0 {
+		cmdResizeTty(c, execID, execIdStore.Height, execIdStore.Width, true)
+	}
 
 	if err := <-errCh; err != nil {
 		logrus.Debugf("Error hijack: %s", err)
@@ -372,7 +436,7 @@ func getExecExitCode(c client.APIClient, execID string) (bool, int, error) {
 
 	return resp.Running, resp.ExitCode, nil
 }
-func holdHijackedConnection(tty bool, inputStream io.ReadCloser, outputStream, errorStream io.Writer, resp types.HijackedResponse) error {
+func holdHijackedConnection(tty bool, inputStream io.ReadCloser, outputStream, errorStream io.Writer, resp types.HijackedResponse, ai *audit.AuditInfo) error {
 	var err error
 	receiveStdout := make(chan error, 1)
 	if outputStream != nil || errorStream != nil {
@@ -391,7 +455,13 @@ func holdHijackedConnection(tty bool, inputStream io.ReadCloser, outputStream, e
 	stdinDone := make(chan struct{})
 	go func() {
 		if inputStream != nil {
-			io.Copy(resp.Conn, inputStream)
+			if ai.AuditClient != nil {
+				// do audit copy
+				SessionInputCopy(resp.Conn, inputStream, nil, ai)
+			} else {
+				io.Copy(resp.Conn, inputStream)
+			}
+
 			logrus.Debugf("[hijack] End of stdin")
 		}
 
