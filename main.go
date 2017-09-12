@@ -141,11 +141,7 @@ func main() {
 			continue
 		}
 
-		err = ssh.HandleSSHConnection(nConn, c, auditClient, IsNoSshAuth)
-		if err != nil {
-			logrus.Errorln("error occurs in ssh listen server: ", err)
-			continue
-		}
+		go ssh.HandleSSHConnection(nConn, c, auditClient, IsNoSshAuth)
 	}
 
 }

@@ -24,6 +24,7 @@ func grammarAnalyse(data []byte) (ready bool, inputMsg string, err error) {
 	// bytes[27 91 68] - left
 	// byte(127) - backspace
 	// bytes[27 91 51 126] - delete
+	// FIXME(tongkai): handle with input - [tab]
 
 	if len(InputCache) >= 1048576 {
 		// cache size large than 1MB, reset InputCache

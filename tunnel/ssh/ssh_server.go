@@ -195,6 +195,7 @@ func startSSHSession(containers []string, channel ssh.Channel, in <-chan *ssh.Re
 				// do audit, not support exec mode
 				channel.Close()
 				logrus.Debugln("SSH exec not support when audit is turned on")
+				break
 			}
 			ok = true
 			command := []string{DEFAULT_SHELL, "-c", string(req.Payload[4 : req.Payload[3]+4])}

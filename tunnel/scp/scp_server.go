@@ -1,30 +1,31 @@
 package scp
 
 import (
-	"io"
+	"archive/tar"
+	"errors"
 	"fmt"
+	"io"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
-	"strings"
-	"errors"
-	"strconv"
-	"path/filepath"
-	"archive/tar"
 
+	"github.com/Sirupsen/logrus"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/context"
-	"github.com/Sirupsen/logrus"
 
-	"github.com/docker/engine-api/types"
 	"github.com/docker/engine-api/client"
+	"github.com/docker/engine-api/types"
+	"os"
 )
 
 type ContainerPipe struct {
 	containerId string
-	pipeReader *io.PipeReader
-	pipeWriter *io.PipeWriter
-	tarReader *tar.Reader
-	tarWriter *tar.Writer
+	pipeReader  *io.PipeReader
+	pipeWriter  *io.PipeWriter
+	tarReader   *tar.Reader
+	tarWriter   *tar.Writer
 }
 
 func sendE(channel ssh.Channel) error {
@@ -82,7 +83,7 @@ func receiveSendFile(channel ssh.Channel, tarReader *tar.Reader) error {
 		if hdr.FileInfo().IsDir() {
 			thisPath = strings.Join(fNames, "/")
 		} else {
-			thisPath = strings.Join(fNames[:len(fNames) - 1], "/")
+			thisPath = strings.Join(fNames[:len(fNames)-1], "/")
 		}
 
 		if lastPath != "" && !strings.HasPrefix(thisPath, lastPath) {
@@ -93,18 +94,18 @@ func receiveSendFile(channel ssh.Channel, tarReader *tar.Reader) error {
 				return err
 			}
 			// when one directory sendE, sendEPathNum --
-			sendEPathNum --
+			sendEPathNum--
 		}
 		lastPath = thisPath
 
 		var scpFileDesc string
 		if hdr.FileInfo().IsDir() {
 			// is directory
-			scpFileDesc = fmt.Sprintf("D0%o %d %s\n", hdr.FileInfo().Mode().Perm(), hdr.Size, fNames[len(fNames) - 1])
+			scpFileDesc = fmt.Sprintf("D0%o %d %s\n", hdr.FileInfo().Mode().Perm(), hdr.Size, fNames[len(fNames)-1])
 		} else {
 			// is regular file
 			// TODO: when file is link
-			scpFileDesc = fmt.Sprintf("C0%o %d %s\n", hdr.FileInfo().Mode().Perm(), hdr.Size, fNames[len(fNames) - 1])
+			scpFileDesc = fmt.Sprintf("C0%o %d %s\n", hdr.FileInfo().Mode().Perm(), hdr.Size, fNames[len(fNames)-1])
 		}
 
 		// send file description to client
@@ -160,7 +161,7 @@ func receiveSendFile(channel ssh.Channel, tarReader *tar.Reader) error {
 			}
 		} else {
 			// when is directory, use sendEPathNum store path without send "E\n"
-			sendEPathNum ++
+			sendEPathNum++
 		}
 	}
 	return nil
@@ -181,15 +182,15 @@ func receiveResponse(channel ssh.Channel) (bool, error) {
 
 	if nr == 1 {
 		switch buf[nr-1] {
-		case byte(0):	// noremal response
+		case byte(0): // noremal response
 			return true, nil
-		case byte(1):	// warning response
+		case byte(1): // warning response
 			logrus.Warningf(fmt.Sprintf("Get warning response: %d", buf[nr-1]))
 			return true, nil
-		case byte(2):	// error response
+		case byte(2): // error response
 			// do retry?
 			return false, errors.New(fmt.Sprintf("Get error response: %d", buf[nr-1]))
-		default:	// unknown reponse
+		default: // unknown reponse
 			return false, errors.New(fmt.Sprintf("Get unknown response: %d", buf[nr-1]))
 		}
 	}
@@ -241,9 +242,9 @@ func transferFile(channel ssh.Channel, containerPipes []*ContainerPipe) error {
 
 	var (
 		filePaths = []string{}
-		tarType = tar.TypeDir
+		tarType   = tar.TypeDir
 	)
-	buf := make([]byte, 32 * 1024)
+	buf := make([]byte, 32*1024)
 	for {
 		nr, err := channel.Read(buf)
 		if err == io.EOF {
@@ -260,12 +261,12 @@ func transferFile(channel ssh.Channel, containerPipes []*ContainerPipe) error {
 		if (buf[0] == byte(68) || buf[0] == byte(67)) && buf[nr-1] == byte(10) {
 			// "C0777 12 testfile" file description is over
 			switch buf[0] {
-			case byte(68):	// "D", directory
+			case byte(68): // "D", directory
 				tarType = tar.TypeDir
-			case byte(67):	// "C", file
+			case byte(67): // "C", file
 				tarType = tar.TypeReg
 			default:
-				return errors.New("Unknown file description:"+string(buf[:nr]))
+				return errors.New("Unknown file description:" + string(buf[:nr]))
 			}
 
 			scpFileDesc := strings.Split(string(buf[1:nr-1]), " ")
@@ -292,11 +293,11 @@ func transferFile(channel ssh.Channel, containerPipes []*ContainerPipe) error {
 
 			// transfer file description
 			hdr := &tar.Header{
-				Name: strings.Join(append(filePaths, fSrcName), "/"),
-				Typeflag: byte(tarType),
-				Mode: fMode,
-				Size: fSize,
-				ModTime: time.Now(),
+				Name:       strings.Join(append(filePaths, fSrcName), "/"),
+				Typeflag:   byte(tarType),
+				Mode:       fMode,
+				Size:       fSize,
+				ModTime:    time.Now(),
 				AccessTime: time.Now(),
 				ChangeTime: time.Now(),
 			}
@@ -332,7 +333,7 @@ func transferFile(channel ssh.Channel, containerPipes []*ContainerPipe) error {
 			}
 			continue
 		}
-		CONTENT:
+	CONTENT:
 		contentBuf := buf[:nr]
 		if (buf[nr-1]) == byte(0) {
 			// file content ends
@@ -369,9 +370,9 @@ func ScpCopyToContainer(containers []string, dstPath string, channel ssh.Channel
 		tw := tar.NewWriter(pw)
 		containerPipes = append(containerPipes, &ContainerPipe{
 			containerId: container,
-			pipeReader: pr,
-			pipeWriter: pw,
-			tarWriter: tw,
+			pipeReader:  pr,
+			pipeWriter:  pw,
+			tarWriter:   tw,
 		})
 	}
 
@@ -388,9 +389,9 @@ func ScpCopyToContainer(containers []string, dstPath string, channel ssh.Channel
 			wg.Add(1)
 			defer wg.Done()
 			options := types.CopyToContainerOptions{
-				ContainerID: cPipe.containerId,
-				Path: dstPath,
-				Content: cPipe.pipeReader,
+				ContainerID:               cPipe.containerId,
+				Path:                      dstPath,
+				Content:                   cPipe.pipeReader,
 				AllowOverwriteDirWithFile: false,
 			}
 			if err := c.CopyToContainer(context.Background(), options); err != nil {
@@ -436,4 +437,33 @@ func splitPathDirEntry(path string) (dir, base string) {
 	}
 
 	return filepath.Dir(cleanedPath), filepath.Base(cleanedPath)
+}
+
+func CopyFileToContainer(c client.APIClient, tarContent io.Reader, dstContainer, dstPath string) (err error) {
+
+	// Prepare destination copy info by stat-ing the container path.
+	dstStat, err := c.ContainerStatPath(context.Background(), dstContainer, dstPath)
+
+	// If the destination is a symbolic link, we should evaluate it.
+	if err == nil && dstStat.Mode&os.ModeSymlink != 0 {
+		linkTarget := dstStat.LinkTarget
+		if !filepath.IsAbs(linkTarget) {
+			// Join with the parent directory.
+			dstParent, _ := splitPathDirEntry(dstPath)
+			linkTarget = filepath.Join(dstParent, linkTarget)
+		}
+
+		dstPath = linkTarget
+		dstStat, err = c.ContainerStatPath(context.Background(), dstContainer, linkTarget)
+	}
+
+	dstParent, _ := splitPathDirEntry(dstPath)
+	options := types.CopyToContainerOptions{
+		ContainerID:               dstContainer,
+		Path:                      dstParent,
+		Content:                   tarContent,
+		AllowOverwriteDirWithFile: false,
+	}
+
+	return c.CopyToContainer(context.Background(), options)
 }
